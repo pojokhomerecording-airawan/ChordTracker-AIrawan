@@ -1,3 +1,6 @@
+Berikut adalah script Streamlit yang telah diperbarui dengan **menghapus seluruh fitur *time-stretching*** (pengubahan kecepatan tempo), sehingga pemrosesan audio menjadi jauh lebih cepat dan ringan:
+
+```python
 import streamlit as st
 import streamlit.components.v1 as components
 import librosa
@@ -17,25 +20,6 @@ st.markdown("""
     <style>
         .block-container { padding-top: 1.5rem; padding-bottom: 0rem; }
         .stMetric { background-color: #161b22; padding: 10px; border-radius: 10px; border: 1px solid #30363d; }
-        
-        /* CSS khusus hanya untuk tombol reset dengan key btn_reset_text */
-        div[data-testid="stButton"] button[kind="secondary"] p,
-        div[data-testid="stButton"] button[kind="secondary"] {
-            background-color: transparent !important;
-            border: none !important;
-            color: #58a6ff !important;
-            padding: 0px !important;
-            min-height: 0px !important;
-            height: auto !important;
-            box-shadow: none !important;
-            text-decoration: underline;
-            font-size: 14px !important;
-        }
-        div[data-testid="stButton"] button[kind="secondary"]:hover {
-            background-color: transparent !important;
-            color: #79c0ff !important;
-            border: none !important;
-        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -44,38 +28,24 @@ st.title("🎵 Chord Tracker by AIrawan")
 # --- HELPER FUNCTIONS ---
 
 def apply_highpass_filter(y, sr, cutoff_freq=80):
-    """High-pass filter menggunakan SOS (lebih stabil dari filtfilt standar)"""
+    """High-pass filter menggunakan SOS"""
     sos = butter(10, cutoff_freq, 'hp', fs=sr, output='sos')
     return sosfilt(sos, y)
-
-def process_time_stretch(y, sr, rate_factor):
-    """Time Stretch Profesional menggunakan Librosa Phase Vocoder (Native)"""
-    if rate_factor == 1.0:
-        return y
-    
-    # Librosa STFT & Phase Vocoder (Sangat stabil di Streamlit Cloud)
-    stft = librosa.stft(y)
-    stft_stretched = librosa.phase_vocoder(stft, rate=rate_factor)
-    return librosa.istft(stft_stretched)
-
-def reset_tempo():
-    """Callback untuk Reset Kecepatan Tempo ke 1.0x"""
-    st.session_state.speed_slider = 1.0
 
 # --- FUNGSI DETEKSI AKORD PRESISI (CENS + BEAT-SYNC) ---
 
 def generate_chord_templates():
     pitch_classes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
     chord_types = {
-        'maj':   {'intervals': [0, 4, 7],         'weights': [1.0, 1.0, 0.8]},
-        'min':   {'intervals': [0, 3, 7],         'weights': [1.0, 1.0, 0.8]},
-        'dim':   {'intervals': [0, 3, 6],         'weights': [1.0, 1.0, 0.8]},
-        'aug':   {'intervals': [0, 4, 8],         'weights': [1.0, 1.0, 0.8]},
-        'maj7':  {'intervals': [0, 4, 7, 11],     'weights': [1.0, 1.0, 0.8, 0.9]},
-        'm7':    {'intervals': [0, 3, 7, 10],     'weights': [1.0, 1.0, 0.8, 0.9]},
-        '7':     {'intervals': [0, 4, 7, 10],     'weights': [1.0, 1.0, 0.8, 0.9]},
-        'dim7':  {'intervals': [0, 3, 6, 9],      'weights': [1.0, 1.0, 0.8, 0.9]},
-        'm7b5':  {'intervals': [0, 3, 6, 10],     'weights': [1.0, 1.0, 0.8, 0.9]}
+        'maj':   {'intervals': [0, 4, 7],        'weights': [1.0, 1.0, 0.8]},
+        'min':   {'intervals': [0, 3, 7],        'weights': [1.0, 1.0, 0.8]},
+        'dim':   {'intervals': [0, 3, 6],        'weights': [1.0, 1.0, 0.8]},
+        'aug':   {'intervals': [0, 4, 8],        'weights': [1.0, 1.0, 0.8]},
+        'maj7':  {'intervals': [0, 4, 7, 11],    'weights': [1.0, 1.0, 0.8, 0.9]},
+        'm7':    {'intervals': [0, 3, 7, 10],    'weights': [1.0, 1.0, 0.8, 0.9]},
+        '7':     {'intervals': [0, 4, 7, 10],    'weights': [1.0, 1.0, 0.8, 0.9]},
+        'dim7':  {'intervals': [0, 3, 6, 9],     'weights': [1.0, 1.0, 0.8, 0.9]},
+        'm7b5':  {'intervals': [0, 3, 6, 10],    'weights': [1.0, 1.0, 0.8, 0.9]}
     }
     templates = []
     labels = []
@@ -133,8 +103,6 @@ uploaded_file = st.file_uploader("Unggah file audio (WAV / MP3)", type=["wav", "
 if uploaded_file is not None:
     if "uploaded_name" not in st.session_state or st.session_state.uploaded_name != uploaded_file.name:
         st.session_state.uploaded_name = uploaded_file.name
-        st.session_state.file_id = str(time.time())
-        st.session_state.speed_slider = 1.0
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp.write(uploaded_file.read())
@@ -148,57 +116,14 @@ if uploaded_file is not None:
             data_hp = apply_highpass_filter(data, rate, cutoff_freq=80)
             data_harmonic, _ = librosa.effects.hpss(data_hp)
             
-            raw_chords = detect_chords_librosa(data_harmonic, rate, beats)
-            st.session_state.raw_chords = raw_chords
-
-            y_full, sr_full = librosa.load(st.session_state.audio_path, sr=44100, mono=False)
-            st.session_state.y_full = y_full
-            st.session_state.sr_full = sr_full
+            st.session_state.raw_chords = detect_chords_librosa(data_harmonic, rate, beats)
 
     st.subheader("⚙️ Informasi Audio")
     st.markdown(f"**Auto BPM Original:** `{st.session_state.detected_bpm} BPM`")
 
-    if "speed_slider" not in st.session_state:
-        st.session_state.speed_slider = 1.0
+    chords_json = json.dumps(st.session_state.raw_chords)
 
-    col_speed, col_reset_btn, col_info = st.columns([1.8, 0.4, 1.8])
-    with col_speed:
-        speed_factor = st.slider("⚡ Kecepatan Tempo", min_value=0.5, max_value=1.5, step=0.05, key="speed_slider")
-    with col_reset_btn:
-        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        st.button("Reset", on_click=reset_tempo, help="Reset ke 1.0x", key="btn_reset_text")
-
-    current_bpm = int(round(st.session_state.detected_bpm * speed_factor))
-    with col_info:
-        st.markdown(f"<p style='margin-top: 32px;'><b>Tempo Efektif:</b> <code>{current_bpm} BPM</code> ({speed_factor:.2f}x)</p>", unsafe_allow_html=True)
-
-    file_key = f"{st.session_state.file_id}_{speed_factor}"
-    processed_audio_path = os.path.join(tempfile.gettempdir(), f"stretched_{file_key}.wav")
-    
-    if not os.path.exists(processed_audio_path):
-        with st.spinner("Memproses audio (Time-stretch)..."):
-            y_audio = st.session_state.y_full
-            sr_audio = st.session_state.sr_full
-            
-            if y_audio.ndim == 2:
-                left = process_time_stretch(y_audio[0], sr_audio, speed_factor)
-                right = process_time_stretch(y_audio[1], sr_audio, speed_factor)
-                stretched_audio = np.vstack([left, right]).T
-            else:
-                stretched_audio = process_time_stretch(y_audio, sr_audio, speed_factor)
-                
-            sf.write(processed_audio_path, stretched_audio, sr_audio)
-
-    adjusted_chords = []
-    for c in st.session_state.raw_chords:
-        adjusted_chords.append({
-            "time": c["time"] / speed_factor,
-            "label": c["label"]
-        })
-
-    chords_json = json.dumps(adjusted_chords)
-
-    with open(processed_audio_path, "rb") as f:
+    with open(st.session_state.audio_path, "rb") as f:
         audio_b64 = base64.b64encode(f.read()).decode("utf-8")
 
     # --- HTML / JS WAVESURFER PLAYER ---
@@ -252,11 +177,14 @@ if uploaded_file is not None:
 
             let isLoopEnabled = false; let activeLoopRegion = null;
             function toggleLoopMode() {{ isLoopEnabled = !isLoopEnabled; document.getElementById('btnLoop').innerText = isLoopEnabled ? "🔁 Loop Section: ON" : "🔁 Loop Section: OFF"; document.getElementById('btnLoop').classList.toggle('btn-loop-active'); }}
+            function clearCustomLoop() {{ if (activeLoopRegion) {{ activeLoopRegion.remove(); activeLoopRegion = null; }} }}
             wavesurfer.on('region-out', (r) => {{ if (isLoopEnabled && activeLoopRegion === r) {{ wavesurfer.seekTo(r.start / wavesurfer.getDuration()); wavesurfer.play(); }} }});
-            wavesurfer.on('region-created', (r) => {{ if (r.drag || r.resize) {{ if (activeLoopRegion && activeLoopRegion.drag) activeLoopRegion.remove(); activeLoopRegion = r; if (!isLoopEnabled) toggleLoopMode(); }} }});
+            wavesurfer.on('region-created', (r) => {{ if (r.drag || r.resize) {{ if (activeLoopRegion && activeLoopRegion !== r) activeLoopRegion.remove(); activeLoopRegion = r; if (!isLoopEnabled) toggleLoopMode(); }} }});
             wavesurfer.on('audioprocess', () => {{ const t = wavesurfer.getCurrentTime(); let c = "-"; for(let i=0; i<chordData.length; i++) {{ if(t >= chordData[i].time && (i === chordData.length-1 || t < chordData[i+1].time)) {{ c = chordData[i].label; break; }} }} document.getElementById('chordDisplay').innerText = c; }});
         </script>
     </body>
     </html>
     """
     components.html(player_html, height=350)
+
+```
