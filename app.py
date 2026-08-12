@@ -1,8 +1,4 @@
-Error tersebut terjadi karena jumlah kolom pada hasil sinkronisasi `chroma_sync` (yang dikoordinasikan dengan `beats`) tidak selaras dengan panjang array `beat_times`, sehingga terjadi ketidakcocokan indeks (`IndexError`) saat penggabungan data kord.
-
-Berikut adalah perbaikan pada fungsi `detect_chords` di dalam script Anda untuk memastikan panjang `chroma_sync` dan `beat_times` selalu konsisten menggunakan `librosa.util.fix_frames`:
-
-```python
+python
 import streamlit as st
 import streamlit.components.v1 as components
 import librosa
