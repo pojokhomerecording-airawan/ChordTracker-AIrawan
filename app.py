@@ -170,6 +170,3 @@ if uploaded_file:
     """
 
     components.html(player_html, height=290)
-
-    st.subheader("📋 Data Timeline Akord")
-    st.write(st.session_state.chords)
