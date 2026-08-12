@@ -1,7 +1,7 @@
 streamlit
-librosa
-vamp
-soundfile
 numpy
 scipy
+soundfile
+librosa
 pyrubberband
+vamp
