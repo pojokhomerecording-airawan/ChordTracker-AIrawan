@@ -76,12 +76,11 @@ if uploaded_file:
         audio_bytes = f.read()
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    # --- HTML / JS WAVESURFER PLAYER DENGAN REGIONS (CHORD LABELS DI ATAS WAVEFORM) ---
+    # --- HTML / JS WAVESURFER PLAYER DENGAN REGIONS ---
     player_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <!-- Memuat WaveSurfer v6 beserta plugin regions -->
         <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/wavesurfer.min.js"></script>
         <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/plugin/wavesurfer.regions.min.js"></script>
         <style>
@@ -95,19 +94,20 @@ if uploaded_file:
             .chord-title {{ color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}
             .chord-display {{ font-size: 64px; font-weight: bold; color: #58a6ff; margin-top: 10px; }}
             
-            /* Style kustom untuk label akord di atas waveform */
+            /* Style label akord di atas waveform */
             .chord-label-tag {{
                 position: absolute;
                 top: 2px;
                 left: 3px;
-                background: rgba(31, 111, 235, 0.85);
+                background: rgba(31, 111, 235, 0.9);
                 color: #ffffff;
-                font-size: 11px;
+                font-size: 10px;
                 font-weight: bold;
-                padding: 2px 5px;
-                border-radius: 4px;
+                padding: 1px 4px;
+                border-radius: 3px;
                 pointer-events: none;
                 z-index: 10;
+                white-space: nowrap;
             }}
         </style>
     </head>
@@ -126,7 +126,6 @@ if uploaded_file:
         <script>
             const chordData = {chords_json};
 
-            // Inisialisasi WaveSurfer dengan Regions Plugin
             const wavesurfer = WaveSurfer.create({{
                 container: '#waveform',
                 waveColor: '#30363d',
@@ -144,7 +143,6 @@ if uploaded_file:
                 ]
             }});
 
-            // Load audio dari base64 aman via Blob
             const base64Audio = "{audio_b64}";
             const binaryString = atob(base64Audio);
             const len = binaryString.length;
@@ -157,25 +155,31 @@ if uploaded_file:
             
             wavesurfer.load(blobUrl);
 
-            // Menambahkan penanda region & label akord di atas waveform setelah audio siap
             wavesurfer.on('ready', () => {{
                 const totalDuration = wavesurfer.getDuration();
                 
+                // Pastikan data kord terurut berdasarkan waktu
+                chordData.sort((a, b) => a.time - b.time);
+
                 chordData.forEach((item, index) => {{
                     const startTime = item.time;
-                    const endTime = (index < chordData.length - 1) ? chordData[index + 1].time : totalDuration;
+                    // Tentukan akhir region berdasarkan waktu kord berikutnya, atau total durasi lagu jika kord terakhir
+                    let endTime = (index < chordData.length - 1) ? chordData[index + 1].time : totalDuration;
                     
-                    // Tambahkan region transparan dengan garis tipis penanda akord
+                    // Pastikan durasi region valid (tidak 0 atau negatif)
+                    if (endTime <= startTime) {{
+                        endTime = startTime + 0.5; 
+                    }}
+                    
                     const region = wavesurfer.addRegion({{
                         start: startTime,
                         end: endTime,
-                        color: 'rgba(31, 111, 235, 0.1)',
+                        color: 'rgba(31, 111, 235, 0.15)',
                         drag: false,
                         resize: false
                     }});
 
-                    // Tempelkan elemen teks label akord ke atas region waveform
-                    if (region.element) {{
+                    if (region && region.element) {{
                         const tag = document.createElement('span');
                         tag.className = 'chord-label-tag';
                         tag.innerText = item.label;
@@ -184,7 +188,6 @@ if uploaded_file:
                 }});
             }});
 
-            // Sinkronisasi pemutaran akord real-time
             wavesurfer.on('audioprocess', () => {{
                 const currentTime = wavesurfer.getCurrentTime();
                 let currentChord = "-";
