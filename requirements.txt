@@ -1,5 +1,7 @@
-streamlit
+setuptools>=60.0.0
+wheel
 numpy
+streamlit
 scipy
 soundfile
 librosa
