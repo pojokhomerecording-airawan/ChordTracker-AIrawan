@@ -169,4 +169,4 @@ if uploaded_file:
     </html>
     """
 
-    components.html(player_html, height=290)
+    components.html(player_html, height=350)
