@@ -111,5 +111,3 @@ if uploaded_file:
     </script>
     """
     components.html(player_html, height=240)
-
-```
