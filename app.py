@@ -6,10 +6,10 @@ import tempfile
 import json
 import base64
 
-st.set_page_config(page_title="Accurate Chord Tracker", layout="wide")
+st.set_page_config(page_title="ChordTracker by AIrawan", layout="wide")
 
-st.title("🎸 Accurate Chord Tracker with Waveform & Chords")
-st.markdown("Deteksi akord otomatis berbasis CENS Chromagram & Beat-Sync.")
+st.title("ChordTracker by AIrawan")
+st.markdown("Deteksi akord otomatis")
 
 # --- Helper: Chord Template ---
 def get_chord_templates():
@@ -71,44 +71,27 @@ if uploaded_file:
 
     chords_json = json.dumps(st.session_state.chords)
 
-    # Membaca file audio ke base64
+    # Membaca file audio ke base64 untuk dimasukkan aman ke JavaScript blob
     with open(st.session_state.audio_path, "rb") as f:
         audio_bytes = f.read()
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    # --- HTML / JS WAVESURFER PLAYER DENGAN REGIONS ---
+    # --- HTML / JS WAVESURFER PLAYER DENGAN PLAYHEAD ---
     player_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/wavesurfer.min.js"></script>
-        <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/plugin/wavesurfer.regions.min.js"></script>
         <style>
             body {{ background-color: #0e1117; color: white; font-family: sans-serif; margin: 0; padding: 10px; }}
             .player-box {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; }}
-            #waveform {{ width: 100%; margin-bottom: 15px; position: relative; }}
+            #waveform {{ width: 100%; margin-bottom: 15px; }}
             .controls {{ display: flex; gap: 10px; margin-bottom: 20px; }}
             button {{ background-color: #238636; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px; }}
             button:hover {{ background-color: #2ea043; }}
             .chord-container {{ background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 20px; text-align: center; }}
             .chord-title {{ color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }}
             .chord-display {{ font-size: 64px; font-weight: bold; color: #58a6ff; margin-top: 10px; }}
-            
-            /* Style label akord di atas waveform */
-            .chord-label-tag {{
-                position: absolute;
-                top: 2px;
-                left: 3px;
-                background: rgba(31, 111, 235, 0.9);
-                color: #ffffff;
-                font-size: 10px;
-                font-weight: bold;
-                padding: 1px 4px;
-                border-radius: 3px;
-                pointer-events: none;
-                z-index: 10;
-                white-space: nowrap;
-            }}
         </style>
     </head>
     <body>
@@ -126,23 +109,20 @@ if uploaded_file:
         <script>
             const chordData = {chords_json};
 
+            // Inisialisasi WaveSurfer dengan Playhead (cursorColor)
             const wavesurfer = WaveSurfer.create({{
                 container: '#waveform',
                 waveColor: '#30363d',
                 progressColor: '#58a6ff',
-                cursorColor: '#f0883e',
+                cursorColor: '#f0883e',  // Garis playhead berjalan
                 cursorWidth: 2,
                 height: 100,
                 barWidth: 2,
                 barRadius: 2,
-                responsive: true,
-                plugins: [
-                    WaveSurfer.regions.create({{
-                        dragSelection: false
-                    }})
-                ]
+                responsive: true
             }});
 
+            // Load audio dari base64 aman via Blob
             const base64Audio = "{audio_b64}";
             const binaryString = atob(base64Audio);
             const len = binaryString.length;
@@ -155,39 +135,7 @@ if uploaded_file:
             
             wavesurfer.load(blobUrl);
 
-            wavesurfer.on('ready', () => {{
-                const totalDuration = wavesurfer.getDuration();
-                
-                // Pastikan data kord terurut berdasarkan waktu
-                chordData.sort((a, b) => a.time - b.time);
-
-                chordData.forEach((item, index) => {{
-                    const startTime = item.time;
-                    // Tentukan akhir region berdasarkan waktu kord berikutnya, atau total durasi lagu jika kord terakhir
-                    let endTime = (index < chordData.length - 1) ? chordData[index + 1].time : totalDuration;
-                    
-                    // Pastikan durasi region valid (tidak 0 atau negatif)
-                    if (endTime <= startTime) {{
-                        endTime = startTime + 0.5; 
-                    }}
-                    
-                    const region = wavesurfer.addRegion({{
-                        start: startTime,
-                        end: endTime,
-                        color: 'rgba(31, 111, 235, 0.15)',
-                        drag: false,
-                        resize: false
-                    }});
-
-                    if (region && region.element) {{
-                        const tag = document.createElement('span');
-                        tag.className = 'chord-label-tag';
-                        tag.innerText = item.label;
-                        region.element.appendChild(tag);
-                    }}
-                }});
-            }});
-
+            // Sinkronisasi pemutaran akord real-time berdasarkan waktu playhead
             wavesurfer.on('audioprocess', () => {{
                 const currentTime = wavesurfer.getCurrentTime();
                 let currentChord = "-";
@@ -202,6 +150,7 @@ if uploaded_file:
                 document.getElementById('chordDisplay').innerText = currentChord;
             }});
 
+            // Update juga ketika user melakukan klik/seek langsung pada waveform
             wavesurfer.on('seek', () => {{
                 const currentTime = wavesurfer.getCurrentTime();
                 let currentChord = "-";
@@ -220,4 +169,4 @@ if uploaded_file:
     </html>
     """
 
-    components.html(player_html, height=360)
+    components.html(player_html, height=350)
