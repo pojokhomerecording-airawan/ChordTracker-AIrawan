@@ -10,7 +10,7 @@ import os
 st.set_page_config(page_title="ChordTracker by AIrawan", layout="wide")
 
 st.title("ChordTracker by AIrawan")
-st.markdown("Deteksi akord otomatis")
+st.markdown("Deteksi akord otomatis & tempo lagu")
 
 # --- Helper: Chord Template ---
 def get_chord_templates():
@@ -28,12 +28,15 @@ def get_chord_templates():
             labels.append(f"{root}{name if name == 'maj' else 'm'}")
     return np.array(templates), labels
 
-# --- Core Detection (Optimized for Stability) ---
-def detect_chords(y, sr):
+# --- Core Detection (Optimized for Stability & Tempo) ---
+def detect_chords_and_tempo(y, sr):
     chroma = librosa.feature.chroma_cens(y=y, sr=sr, fmin=librosa.note_to_hz('C2'), hop_length=1024)
     chroma = librosa.util.normalize(chroma, norm=np.inf, axis=0)
     
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=1024)
+    
+    # Penanganan jika tempo berupa array (librosa versi terbaru kadang mengembalikan array 1 elemen)
+    detected_tempo = float(tempo[0]) if isinstance(tempo, np.ndarray) else float(tempo)
     
     if len(beats) > 0:
         fixed_beats = librosa.util.fix_frames(beats, x_min=0, x_max=chroma.shape[1])
@@ -63,7 +66,7 @@ def detect_chords(y, sr):
                 chord_sequence[-1]["label"] = chord
                 current_chord = chord
             
-    return chord_sequence
+    return chord_sequence, round(detected_tempo, 1)
 
 # --- Main App ---
 uploaded_file = st.file_uploader("Upload lagu (WAV/MP3)", type=["wav", "mp3"])
@@ -82,9 +85,14 @@ if uploaded_file:
             tmp.write(uploaded_file.read())
             st.session_state.audio_path = tmp.name
 
-        with st.spinner("Menganalisis audio & akord lagu baru..."):
+        with st.spinner("Menganalisis tempo, audio & akord lagu baru..."):
             y, sr = librosa.load(st.session_state.audio_path, sr=22050)
-            st.session_state.chords = detect_chords(y, sr)
+            chords, tempo = detect_chords_and_tempo(y, sr)
+            st.session_state.chords = chords
+            st.session_state.tempo = tempo
+
+    # Tampilkan Informasi Tempo (BPM)
+    st.metric(label="🎵 Perkiraan Tempo Lagu", value=f"{st.session_state.tempo} BPM")
 
     chords_json = json.dumps(st.session_state.chords)
 
@@ -92,7 +100,7 @@ if uploaded_file:
         audio_bytes = f.read()
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    # --- HTML / JS WAVESURFER PLAYER DENGAN SEEKING AKTIF ---
+    # --- HTML / JS WAVESURFER PLAYER ---
     player_html = f"""
     <!DOCTYPE html>
     <html>
@@ -134,7 +142,7 @@ if uploaded_file:
                 height: 100,
                 barWidth: 2,
                 barRadius: 2,
-                interact: true,  // Memastikan interaksi klik/geser aktif
+                interact: true,
                 responsive: true
             }});
 
@@ -150,7 +158,6 @@ if uploaded_file:
             
             wavesurfer.load(blobUrl);
 
-            // Fungsi helper untuk memperbarui tampilan akor berdasarkan waktu tertentu
             function updateChordDisplay(time) {{
                 let currentChord = "-";
                 for (let i = 0; i < chordData.length; i++) {{
@@ -163,12 +170,10 @@ if uploaded_file:
                 document.getElementById('chordDisplay').innerText = currentChord;
             }}
 
-            // Sinkronisasi saat lagu berjalan normal
             wavesurfer.on('audioprocess', () => {{
                 updateChordDisplay(wavesurfer.getCurrentTime());
             }});
 
-            // Sinkronisasi instan saat user mengklik atau menggeser playhead ke posisi baru
             wavesurfer.on('seek', (progress) => {{
                 updateChordDisplay(wavesurfer.getCurrentTime());
             }});
