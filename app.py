@@ -5,6 +5,7 @@ import numpy as np
 import tempfile
 import json
 import base64
+import os
 
 st.set_page_config(page_title="ChordTracker by AIrawan", layout="wide")
 
@@ -29,10 +30,7 @@ def get_chord_templates():
 
 # --- Core Detection (Optimized for Stability) ---
 def detect_chords(y, sr):
-    # Ekstraksi CENS dengan hop_length yang lebih besar agar tidak terlalu sensitif per frame kecil
     chroma = librosa.feature.chroma_cens(y=y, sr=sr, fmin=librosa.note_to_hz('C2'), hop_length=1024)
-    
-    # Smoothing filter (Median filter) untuk meredam noise akibat drum/perkusi
     chroma = librosa.util.normalize(chroma, norm=np.inf, axis=0)
     
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=1024)
@@ -51,9 +49,7 @@ def detect_chords(y, sr):
     
     chord_sequence = []
     current_chord = None
-    
-    # Filter tambahan: Minimal durasi perubahan akord (misal minimal jeda waktu antar akor)
-    min_duration = 0.6  # dalam detik, mencegah akor berganti terlalu cepat
+    min_duration = 0.6  # minimal durasi detik antar perubahan akor
     
     for i, idx in enumerate(best_indices):
         chord = labels[idx]
@@ -64,7 +60,6 @@ def detect_chords(y, sr):
                 chord_sequence.append({"time": t, "label": chord})
                 current_chord = chord
             else:
-                # Jika terlalu cepat berganti, timpa label akor sebelumnya dengan yang baru jika konsisten
                 chord_sequence[-1]["label"] = chord
                 current_chord = chord
             
@@ -74,13 +69,25 @@ def detect_chords(y, sr):
 uploaded_file = st.file_uploader("Upload lagu (WAV/MP3)", type=["wav", "mp3"])
 
 if uploaded_file:
-    if "audio_path" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
+    # Cek apakah file yang di-upload berbeda dengan file yang tersimpan di session state
+    if "file_name" not in st.session_state or st.session_state.file_name != uploaded_file.name:
+        # Hapus file temporary lama jika ada untuk menghemat memori server
+        if "audio_path" in st.session_state and os.path.exists(st.session_state.audio_path):
+            try:
+                os.remove(st.session_state.audio_path)
+            except:
+                pass
+                
+        # Bersihkan cache data lama
+        st.session_state.clear()
+        
+        # Simpan informasi file baru
+        st.session_state.file_name = uploaded_file.name
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp.write(uploaded_file.read())
             st.session_state.audio_path = tmp.name
-            st.session_state.file_name = uploaded_file.name
 
-        with st.spinner("Menganalisis audio & akord..."):
+        with st.spinner("Menganalisis audio & akord lagu baru..."):
             y, sr = librosa.load(st.session_state.audio_path, sr=22050)
             st.session_state.chords = detect_chords(y, sr)
 
@@ -124,12 +131,11 @@ if uploaded_file:
         <script>
             const chordData = {chords_json};
 
-            // Inisialisasi WaveSurfer dengan Playhead (cursorColor)
             const wavesurfer = WaveSurfer.create({{
                 container: '#waveform',
                 waveColor: '#30363d',
                 progressColor: '#58a6ff',
-                cursorColor: '#f0883e',  // Garis playhead berjalan
+                cursorColor: '#f0883e',
                 cursorWidth: 2,
                 height: 100,
                 barWidth: 2,
@@ -137,7 +143,6 @@ if uploaded_file:
                 responsive: true
             }});
 
-            // Load audio dari base64 aman via Blob
             const base64Audio = "{audio_b64}";
             const binaryString = atob(base64Audio);
             const len = binaryString.length;
@@ -150,7 +155,6 @@ if uploaded_file:
             
             wavesurfer.load(blobUrl);
 
-            // Sinkronisasi pemutaran akord real-time berdasarkan waktu playhead
             wavesurfer.on('audioprocess', () => {{
                 const currentTime = wavesurfer.getCurrentTime();
                 let currentChord = "-";
@@ -165,7 +169,6 @@ if uploaded_file:
                 document.getElementById('chordDisplay').innerText = currentChord;
             }});
 
-            // Update juga ketika user melakukan klik/seek langsung pada waveform
             wavesurfer.on('seek', () => {{
                 const currentTime = wavesurfer.getCurrentTime();
                 let currentChord = "-";
