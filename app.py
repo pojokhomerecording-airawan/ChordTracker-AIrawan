@@ -184,7 +184,3 @@ if uploaded_file is not None:
         </script>
     </body>
     </html>
-    """
-    components.html(player_html, height=350)
-
-```
