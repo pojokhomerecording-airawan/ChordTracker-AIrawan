@@ -159,9 +159,9 @@ if uploaded_file is not None:
         with st.spinner("Menganalisis akord (Support 4-Nada) & mendeteksi BPM tempo..."):
             data, rate = librosa.load(st.session_state.audio_path, sr=44100, mono=True)
             
-            # 1. Deteksi BPM
+            # 1. Deteksi BPM (Diperbaiki agar kompatibel dengan Librosa v0.10+)
             tempo, _ = librosa.beat.beat_track(y=data, sr=rate)
-            st.session_state.detected_bpm = int(round(float(tempo)))
+            st.session_state.detected_bpm = int(round(float(np.mean(tempo))))
 
             # 2. Deteksi Akord via Librosa (Menggantikan Vamp/Chordino)
             data_hp = apply_highpass_filter(data, rate, cutoff_freq=80)
