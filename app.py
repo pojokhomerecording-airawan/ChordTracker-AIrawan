@@ -1,4 +1,4 @@
-Berikut adalah script Streamlit yang telah diperbarui dengan **menghapus seluruh fitur *time-stretching*** (pengubahan kecepatan tempo), sehingga pemrosesan audio menjadi jauh lebih cepat dan ringan:
+# Berikut adalah script Streamlit yang telah diperbarui dengan **menghapus seluruh fitur *time-stretching*** (pengubahan kecepatan tempo), sehingga pemrosesan audio menjadi jauh lebih cepat dan ringan:
 
 ```python
 import streamlit as st
