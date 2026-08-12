@@ -1,3 +1,8 @@
+Error tersebut terjadi karena jumlah kolom pada hasil sinkronisasi `chroma_sync` (yang dikoordinasikan dengan `beats`) tidak selaras dengan panjang array `beat_times`, sehingga terjadi ketidakcocokan indeks (`IndexError`) saat penggabungan data kord.
+
+Berikut adalah perbaikan pada fungsi `detect_chords` di dalam script Anda untuk memastikan panjang `chroma_sync` dan `beat_times` selalu konsisten menggunakan `librosa.util.fix_frames`:
+
+```python
 import streamlit as st
 import streamlit.components.v1 as components
 import librosa
@@ -27,14 +32,16 @@ def get_chord_templates():
             labels.append(f"{root}{name if name == 'maj' else 'm'}")
     return np.array(templates), labels
 
-# --- Core Detection ---
+# --- Core Detection (Fixed Indexing) ---
 def detect_chords(y, sr):
     chroma = librosa.feature.chroma_cens(y=y, sr=sr, fmin=librosa.note_to_hz('C2'))
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
     
     if len(beats) > 0:
-        chroma_sync = librosa.util.sync(chroma, beats, aggregate=np.median)
-        beat_times = librosa.frames_to_time(beats, sr=sr)
+        # Perbaikan: Menggunakan fix_frames agar sinkronisasi aman dari error dimensi
+        fixed_beats = librosa.util.fix_frames(beats, xmin=0, xmax=chroma.shape[1])
+        chroma_sync = librosa.util.sync(chroma, fixed_beats, aggregate=np.median)
+        beat_times = librosa.frames_to_time(fixed_beats, sr=sr)
     else:
         chroma_sync = chroma
         beat_times = librosa.times_like(chroma, sr=sr)
@@ -72,7 +79,7 @@ if uploaded_file:
     st.subheader("Hasil Deteksi Akord")
     st.write(chords)
 
-    # --- WaveSurfer JS Player (Stable UMD v6) ---
+    # --- WaveSurfer JS Player ---
     player_html = f"""
     <div style="background:#161b22; padding:15px; border-radius:8px; border:1px solid #30363d;">
         <div id="waveform" style="margin-bottom:10px;"></div>
@@ -105,8 +112,8 @@ if uploaded_file:
             }}
             document.getElementById('chord-display').innerText = current;
         }});
-        
-        // Tombol play otomatis atau interaksi dasar bisa ditambahkan via control bawaan / play pause
     </script>
     """
     components.html(player_html, height=240)
+
+```
