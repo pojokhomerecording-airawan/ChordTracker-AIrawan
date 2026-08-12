@@ -27,18 +27,23 @@ def get_chord_templates():
             labels.append(f"{root}{name if name == 'maj' else 'm'}")
     return np.array(templates), labels
 
-# --- Core Detection ---
+# --- Core Detection (Optimized for Stability) ---
 def detect_chords(y, sr):
-    chroma = librosa.feature.chroma_cens(y=y, sr=sr, fmin=librosa.note_to_hz('C2'))
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
+    # Ekstraksi CENS dengan hop_length yang lebih besar agar tidak terlalu sensitif per frame kecil
+    chroma = librosa.feature.chroma_cens(y=y, sr=sr, fmin=librosa.note_to_hz('C2'), hop_length=1024)
+    
+    # Smoothing filter (Median filter) untuk meredam noise akibat drum/perkusi
+    chroma = librosa.util.normalize(chroma, norm=np.inf, axis=0)
+    
+    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=1024)
     
     if len(beats) > 0:
         fixed_beats = librosa.util.fix_frames(beats, x_min=0, x_max=chroma.shape[1])
         chroma_sync = librosa.util.sync(chroma, fixed_beats, aggregate=np.median)
-        beat_times = librosa.frames_to_time(fixed_beats, sr=sr)
+        beat_times = librosa.frames_to_time(fixed_beats, sr=sr, hop_length=1024)
     else:
         chroma_sync = chroma
-        beat_times = librosa.times_like(chroma, sr=sr)
+        beat_times = librosa.times_like(chroma, sr=sr, hop_length=1024)
         
     templates, labels = get_chord_templates()
     similarities = np.dot(templates, chroma_sync)
@@ -47,11 +52,21 @@ def detect_chords(y, sr):
     chord_sequence = []
     current_chord = None
     
+    # Filter tambahan: Minimal durasi perubahan akord (misal minimal jeda waktu antar akor)
+    min_duration = 0.6  # dalam detik, mencegah akor berganti terlalu cepat
+    
     for i, idx in enumerate(best_indices):
         chord = labels[idx]
+        t = float(beat_times[i])
+        
         if chord != current_chord:
-            chord_sequence.append({"time": float(beat_times[i]), "label": chord})
-            current_chord = chord
+            if not chord_sequence or (t - chord_sequence[-1]["time"] >= min_duration):
+                chord_sequence.append({"time": t, "label": chord})
+                current_chord = chord
+            else:
+                # Jika terlalu cepat berganti, timpa label akor sebelumnya dengan yang baru jika konsisten
+                chord_sequence[-1]["label"] = chord
+                current_chord = chord
             
     return chord_sequence
 
