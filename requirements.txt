@@ -1,8 +1,9 @@
 setuptools>=60.0.0
 wheel
-numpy
+numpy>=1.20.0
 streamlit
 scipy
 soundfile
 librosa
 pyrubberband
+vamp
