@@ -16,6 +16,26 @@ st.set_page_config(page_title="Chord Tracker by AIrawan", layout="wide")
 st.markdown("""
     <style>
         .block-container { padding-top: 1.5rem; padding-bottom: 0rem; }
+        .stMetric { background-color: #161b22; padding: 10px; border-radius: 10px; border: 1px solid #30363d; }
+        
+        /* CSS khusus hanya untuk tombol reset dengan key btn_reset_text */
+        div[data-testid="stButton"] button[kind="secondary"] p,
+        div[data-testid="stButton"] button[kind="secondary"] {
+            background-color: transparent !important;
+            border: none !important;
+            color: #58a6ff !important;
+            padding: 0px !important;
+            min-height: 0px !important;
+            height: auto !important;
+            box-shadow: none !important;
+            text-decoration: underline;
+            font-size: 14px !important;
+        }
+        div[data-testid="stButton"] button[kind="secondary"]:hover {
+            background-color: transparent !important;
+            color: #79c0ff !important;
+            border: none !important;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -24,33 +44,38 @@ st.title("🎵 Chord Tracker by AIrawan")
 # --- HELPER FUNCTIONS ---
 
 def apply_highpass_filter(y, sr, cutoff_freq=80):
+    """High-pass filter menggunakan SOS (lebih stabil dari filtfilt standar)"""
     sos = butter(10, cutoff_freq, 'hp', fs=sr, output='sos')
     return sosfilt(sos, y)
 
 def process_time_stretch(y, sr, rate_factor):
-    """
-    Time Stretch MURNI menggunakan Librosa (Tanpa dependensi luar).
-    Ini solusi paling stabil untuk Streamlit Cloud.
-    """
+    """Time Stretch Profesional menggunakan Librosa Phase Vocoder (Native)"""
     if rate_factor == 1.0:
         return y
     
-    # Melakukan STFT, Stretch dengan Phase Vocoder, lalu Inverse STFT
-    # Ini murni Python, tidak butuh aplikasi eksternal rubberband
+    # Librosa STFT & Phase Vocoder (Sangat stabil di Streamlit Cloud)
     stft = librosa.stft(y)
     stft_stretched = librosa.phase_vocoder(stft, rate=rate_factor)
     return librosa.istft(stft_stretched)
 
 def reset_tempo():
+    """Callback untuk Reset Kecepatan Tempo ke 1.0x"""
     st.session_state.speed_slider = 1.0
 
-# --- FUNGSI DETEKSI AKORD ---
+# --- FUNGSI DETEKSI AKORD PRESISI (CENS + BEAT-SYNC) ---
 
 def generate_chord_templates():
     pitch_classes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
     chord_types = {
-        'maj': {'intervals': [0, 4, 7], 'weights': [1.0, 1.0, 0.8]},
-        'min': {'intervals': [0, 3, 7], 'weights': [1.0, 1.0, 0.8]}
+        'maj':   {'intervals': [0, 4, 7],         'weights': [1.0, 1.0, 0.8]},
+        'min':   {'intervals': [0, 3, 7],         'weights': [1.0, 1.0, 0.8]},
+        'dim':   {'intervals': [0, 3, 6],         'weights': [1.0, 1.0, 0.8]},
+        'aug':   {'intervals': [0, 4, 8],         'weights': [1.0, 1.0, 0.8]},
+        'maj7':  {'intervals': [0, 4, 7, 11],     'weights': [1.0, 1.0, 0.8, 0.9]},
+        'm7':    {'intervals': [0, 3, 7, 10],     'weights': [1.0, 1.0, 0.8, 0.9]},
+        '7':     {'intervals': [0, 4, 7, 10],     'weights': [1.0, 1.0, 0.8, 0.9]},
+        'dim7':  {'intervals': [0, 3, 6, 9],      'weights': [1.0, 1.0, 0.8, 0.9]},
+        'm7b5':  {'intervals': [0, 3, 6, 10],     'weights': [1.0, 1.0, 0.8, 0.9]}
     }
     templates = []
     labels = []
@@ -60,14 +85,18 @@ def generate_chord_templates():
             for interval, weight in zip(data['intervals'], data['weights']):
                 template[(i + interval) % 12] = weight
             norm = np.linalg.norm(template)
-            if norm > 0: template = template / norm
-            label = f"{root}{'m' if chord_name == 'min' else ''}"
+            if norm > 0:
+                template = template / norm
+            if chord_name == 'maj': label = root
+            elif chord_name == 'min': label = f"{root}m"
+            else: label = f"{root}{chord_name}"
             templates.append(template)
             labels.append(label)
     return np.array(templates).T, labels
 
 def detect_chords_librosa(y, sr, beats):
     chroma_cens = librosa.feature.chroma_cens(y=y, sr=sr, fmin=librosa.note_to_hz('C2'), bins_per_octave=36)
+    
     if len(beats) > 0:
         chroma_sync = librosa.util.sync(chroma_cens, beats, aggregate=np.median)
         beat_times = librosa.frames_to_time(beats, sr=sr)
@@ -77,64 +106,157 @@ def detect_chords_librosa(y, sr, beats):
         
     templates, labels = generate_chord_templates()
     similarities = np.dot(templates.T, chroma_sync)
+    
+    for idx, label in enumerate(labels):
+        if any(x in label for x in ['7', 'maj7', 'm7', 'dim7', 'm7b5']):
+            similarities[idx, :] *= 0.95
+            
     best_matches = np.argmax(similarities, axis=0)
     
     chords = []
     current_chord = None
+    if len(beat_times) > 0 and beat_times[0] > 0.1:
+        chords.append({"time": 0.0, "label": "N"})
+        
     for time_val, match_idx in zip(beat_times, best_matches):
         chord_label = labels[match_idx]
         if chord_label != current_chord:
             chords.append({"time": float(time_val), "label": chord_label})
             current_chord = chord_label
+            
     return chords
 
 # --- MAIN APP ---
 
 uploaded_file = st.file_uploader("Unggah file audio (WAV / MP3)", type=["wav", "mp3"])
 
-if uploaded_file:
-    if "last_file" not in st.session_state or st.session_state.last_file != uploaded_file.name:
-        st.session_state.last_file = uploaded_file.name
+if uploaded_file is not None:
+    if "uploaded_name" not in st.session_state or st.session_state.uploaded_name != uploaded_file.name:
+        st.session_state.uploaded_name = uploaded_file.name
+        st.session_state.file_id = str(time.time())
+        st.session_state.speed_slider = 1.0
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp.write(uploaded_file.read())
-            path = tmp.name
-        
-        data, rate = librosa.load(path, sr=44100, mono=True)
-        tempo, beats = librosa.beat.beat_track(y=data, sr=rate)
-        
-        st.session_state.detected_bpm = int(round(float(np.mean(tempo))))
-        st.session_state.raw_chords = detect_chords_librosa(librosa.effects.hpss(apply_highpass_filter(data, rate))[0], rate, beats)
-        st.session_state.y_full, st.session_state.sr_full = librosa.load(path, sr=44100, mono=False)
-        st.session_state.file_id = str(time.time())
+            st.session_state.audio_path = tmp.name
 
-    # UI Controls
-    speed = st.slider("Kecepatan", 0.5, 1.5, 1.0, 0.05, key="speed_slider")
-    
-    # Process Audio (Tanpa PyRubberband sama sekali)
-    processed_path = os.path.join(tempfile.gettempdir(), f"out_{st.session_state.file_id}.wav")
-    
-    if not os.path.exists(processed_path):
-        y = st.session_state.y_full
-        sr = st.session_state.sr_full
-        if y.ndim == 2:
-            y_out = np.vstack([process_time_stretch(y[0], sr, speed), process_time_stretch(y[1], sr, speed)]).T
-        else:
-            y_out = process_time_stretch(y, sr, speed)
-        sf.write(processed_path, y_out, sr)
+        with st.spinner("Menganalisis BPM & Akord..."):
+            data, rate = librosa.load(st.session_state.audio_path, sr=44100, mono=True)
+            tempo, beats = librosa.beat.beat_track(y=data, sr=rate)
+            st.session_state.detected_bpm = int(round(float(np.mean(tempo))))
 
-    # Encode & Player
-    with open(processed_path, "rb") as f:
+            data_hp = apply_highpass_filter(data, rate, cutoff_freq=80)
+            data_harmonic, _ = librosa.effects.hpss(data_hp)
+            
+            raw_chords = detect_chords_librosa(data_harmonic, rate, beats)
+            st.session_state.raw_chords = raw_chords
+
+            y_full, sr_full = librosa.load(st.session_state.audio_path, sr=44100, mono=False)
+            st.session_state.y_full = y_full
+            st.session_state.sr_full = sr_full
+
+    st.subheader("⚙️ Informasi Audio")
+    st.markdown(f"**Auto BPM Original:** `{st.session_state.detected_bpm} BPM`")
+
+    if "speed_slider" not in st.session_state:
+        st.session_state.speed_slider = 1.0
+
+    col_speed, col_reset_btn, col_info = st.columns([1.8, 0.4, 1.8])
+    with col_speed:
+        speed_factor = st.slider("⚡ Kecepatan Tempo", min_value=0.5, max_value=1.5, step=0.05, key="speed_slider")
+    with col_reset_btn:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        st.button("Reset", on_click=reset_tempo, help="Reset ke 1.0x", key="btn_reset_text")
+
+    current_bpm = int(round(st.session_state.detected_bpm * speed_factor))
+    with col_info:
+        st.markdown(f"<p style='margin-top: 32px;'><b>Tempo Efektif:</b> <code>{current_bpm} BPM</code> ({speed_factor:.2f}x)</p>", unsafe_allow_html=True)
+
+    file_key = f"{st.session_state.file_id}_{speed_factor}"
+    processed_audio_path = os.path.join(tempfile.gettempdir(), f"stretched_{file_key}.wav")
+    
+    if not os.path.exists(processed_audio_path):
+        with st.spinner("Memproses audio (Time-stretch)..."):
+            y_audio = st.session_state.y_full
+            sr_audio = st.session_state.sr_full
+            
+            if y_audio.ndim == 2:
+                left = process_time_stretch(y_audio[0], sr_audio, speed_factor)
+                right = process_time_stretch(y_audio[1], sr_audio, speed_factor)
+                stretched_audio = np.vstack([left, right]).T
+            else:
+                stretched_audio = process_time_stretch(y_audio, sr_audio, speed_factor)
+                
+            sf.write(processed_audio_path, stretched_audio, sr_audio)
+
+    adjusted_chords = []
+    for c in st.session_state.raw_chords:
+        adjusted_chords.append({
+            "time": c["time"] / speed_factor,
+            "label": c["label"]
+        })
+
+    chords_json = json.dumps(adjusted_chords)
+
+    with open(processed_audio_path, "rb") as f:
         audio_b64 = base64.b64encode(f.read()).decode("utf-8")
-        
-    chords_json = json.dumps([{"time": c["time"] / speed, "label": c["label"]} for c in st.session_state.raw_chords])
 
-    # Player HTML
-    html_code = f"""
-    <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/wavesurfer.min.js"></script>
-    <div id="waveform"></div>
-    <script>
-        const ws = WaveSurfer.create({{ container: '#waveform', waveColor: '#30363d', progressColor: '#58a6ff', height: 100 }});
-        ws.load('data:audio/wav;base64,{audio_b64}');
-    </script>
+    # --- HTML / JS WAVESURFER PLAYER ---
+    player_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/wavesurfer.min.js"></script>
+        <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/plugin/wavesurfer.regions.min.js"></script>
+        <style>
+            body {{ background-color: #0d1117; color: white; font-family: -apple-system, sans-serif; margin: 0; padding: 10px; }}
+            .player-container {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 15px; }}
+            #waveform {{ width: 100%; margin-bottom: 15px; position: relative; }}
+            .controls {{ display: flex; align-items: center; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }}
+            button {{ background-color: #238636; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: bold; cursor: pointer; }}
+            button:hover {{ background-color: #2ea043; }}
+            .btn-loop-active {{ background-color: #d29922; }}
+            .btn-clear {{ background-color: #21262d; border: 1px solid #30363d; }}
+            .chord-box {{ background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 15px; text-align: center; }}
+            .chord-val {{ font-size: 56px; font-weight: bold; color: #58a6ff; margin-top: 5px; }}
+            .chord-label-tag {{ position: absolute; top: 2px; left: 3px; background: rgba(31, 111, 235, 0.85); color: #ffffff; font-size: 10px; font-weight: bold; padding: 1px 4px; border-radius: 3px; pointer-events: none; }}
+        </style>
+    </head>
+    <body>
+        <div class="player-container">
+            <div id="waveform"></div>
+            <div class="controls">
+                <button onclick="wavesurfer.playPause()">Play / Pause</button>
+                <button id="btnLoop" onclick="toggleLoopMode()">🔁 Loop Section: OFF</button>
+                <button class="btn-clear" onclick="clearCustomLoop()">❌ Hapus Seleksi</button>
+            </div>
+            <div class="chord-box">
+                <div style="color: #8b949e; font-size: 11px; text-transform: uppercase;">Akord Aktif</div>
+                <div id="chordDisplay" class="chord-val">-</div>
+            </div>
+        </div>
+        <script>
+            const chordData = {chords_json};
+            const wavesurfer = WaveSurfer.create({{ container: '#waveform', waveColor: '#30363d', progressColor: '#58a6ff', cursorColor: '#f0883e', height: 90, plugins: [WaveSurfer.regions.create({{ dragSelection: true }})] }});
+            wavesurfer.load('data:audio/wav;base64,{audio_b64}');
+            
+            wavesurfer.on('ready', () => {{
+                chordData.forEach((item, index) => {{
+                    const nextTime = (index < chordData.length - 1) ? chordData[index + 1].time : wavesurfer.getDuration();
+                    const region = wavesurfer.addRegion({{ start: item.time, end: nextTime, drag: false, resize: false }});
+                    if (region.element) {{
+                        const tag = document.createElement('span'); tag.className = 'chord-label-tag'; tag.innerText = item.label; region.element.appendChild(tag);
+                    }}
+                }});
+            }});
+
+            let isLoopEnabled = false; let activeLoopRegion = null;
+            function toggleLoopMode() {{ isLoopEnabled = !isLoopEnabled; document.getElementById('btnLoop').innerText = isLoopEnabled ? "🔁 Loop Section: ON" : "🔁 Loop Section: OFF"; document.getElementById('btnLoop').classList.toggle('btn-loop-active'); }}
+            wavesurfer.on('region-out', (r) => {{ if (isLoopEnabled && activeLoopRegion === r) {{ wavesurfer.seekTo(r.start / wavesurfer.getDuration()); wavesurfer.play(); }} }});
+            wavesurfer.on('region-created', (r) => {{ if (r.drag || r.resize) {{ if (activeLoopRegion && activeLoopRegion.drag) activeLoopRegion.remove(); activeLoopRegion = r; if (!isLoopEnabled) toggleLoopMode(); }} }});
+            wavesurfer.on('audioprocess', () => {{ const t = wavesurfer.getCurrentTime(); let c = "-"; for(let i=0; i<chordData.length; i++) {{ if(t >= chordData[i].time && (i === chordData.length-1 || t < chordData[i+1].time)) {{ c = chordData[i].label; break; }} }} document.getElementById('chordDisplay').innerText = c; }});
+        </script>
+    </body>
+    </html>
     """
-    components.html(html_code, height=150)
+    components.html(player_html, height=350)
