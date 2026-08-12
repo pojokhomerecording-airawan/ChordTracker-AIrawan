@@ -6,4 +6,3 @@ scipy
 soundfile
 librosa
 pyrubberband
-vamp
