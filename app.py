@@ -27,14 +27,14 @@ def get_chord_templates():
             labels.append(f"{root}{name if name == 'maj' else 'm'}")
     return np.array(templates), labels
 
-# --- Core Detection (Fixed Indexing) ---
+# --- Core Detection ---
 def detect_chords(y, sr):
     chroma = librosa.feature.chroma_cens(y=y, sr=sr, fmin=librosa.note_to_hz('C2'))
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
     
     if len(beats) > 0:
-        # Perbaikan: Menggunakan fix_frames agar sinkronisasi aman dari error dimensi
-        fixed_beats = librosa.util.fix_frames(beats, xmin=0, xmax=chroma.shape[1])
+        # Perbaikan: Menggunakan x_max sesuai standar librosa
+        fixed_beats = librosa.util.fix_frames(beats, x_min=0, x_max=chroma.shape[1])
         chroma_sync = librosa.util.sync(chroma, fixed_beats, aggregate=np.median)
         beat_times = librosa.frames_to_time(fixed_beats, sr=sr)
     else:
