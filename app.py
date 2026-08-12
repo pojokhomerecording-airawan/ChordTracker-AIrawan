@@ -1,143 +1,475 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import librosa
-import numpy as np
+import tempfile
 import os
+import json
+import soundfile as sf
+import numpy as np
+import base64
+import time
+from scipy.signal import butter, filtfilt, medfilt
 
-# Konfigurasi halaman Streamlit
-st.set_page_config(
-    page_title="ChordTracker",
-    page_icon="🎸",
-    layout="centered"
-)
+try:
+    import pyrubberband as pyrb
+    USE_RUBBERBAND = True
+except ImportError:
+    USE_RUBBERBAND = False
 
-# Judul Aplikasi
-st.title("🎸 ChordTracker & Audio Analyzer")
-st.write("Aplikasi deteksi akord (termasuk ekstensi 7th), tempo BPM, dan pemutar audio.")
+st.set_page_config(page_title="Chord Tracker by AIrawan", layout="wide")
 
-# Inisialisasi session state jika belum ada
-if "audio_path" not in st.session_state:
-    st.session_state.audio_path = None
-if "raw_chords" not in st.session_state:
-    st.session_state.raw_chords = []
-if "detected_bpm" not in st.session_state:
-    st.session_state.detected_bpm = 0
+st.markdown("""
+    <style>
+        .block-container { padding-top: 1.5rem; padding-bottom: 0rem; }
+        .stMetric { background-color: #161b22; padding: 10px; border-radius: 10px; border: 1px solid #30363d; }
+        
+        /* CSS khusus hanya untuk tombol reset dengan key btn_reset_text */
+        div[data-testid="stButton"] button[kind="secondary"] p,
+        div[data-testid="stButton"] button[kind="secondary"] {
+            background-color: transparent !important;
+            border: none !important;
+            color: #58a6ff !important;
+            padding: 0px !important;
+            min-height: 0px !important;
+            height: auto !important;
+            box-shadow: none !important;
+            text-decoration: underline;
+            font-size: 14px !important;
+        }
+        div[data-testid="stButton"] button[kind="secondary"]:hover {
+            background-color: transparent !important;
+            color: #79c0ff !important;
+            border: none !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-# Bagian Upload File Audio
-uploaded_file = st.file_uploader("Upload file audio (MP3 / WAV)", type=["mp3", "wav", "m4a"])
+st.title("🎵 Chord Tracker by AIrawan")
+
+# Helper Function: High-Pass Filter (80Hz Active)
+def apply_highpass_filter(data, rate, cutoff_freq=80):
+    nyquist = 0.5 * rate
+    normal_cutoff = cutoff_freq / nyquist
+    b, a = butter(5, normal_cutoff, btype='high', analog=False)
+    filtered_data = filtfilt(b, a, data)
+    return filtered_data
+
+# Helper Function: Time Stretch Profesional (Pitch Lock 100%)
+def process_time_stretch(y, sr, rate_factor):
+    if rate_factor == 1.0:
+        return y
+    if USE_RUBBERBAND:
+        return pyrb.time_stretch(y, sr, rate_factor)
+    else:
+        stft = librosa.stft(y)
+        stft_stretched = librosa.phase_vocoder(stft, rate=rate_factor)
+        return librosa.istft(stft_stretched)
+
+# --- FUNGSI DETEKSI AKORD DENGAN LIBROSA (Support 4-Nada/7th Chords) ---
+def generate_chord_templates():
+    pitch_classes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    templates = []
+    labels = []
+    
+    # Interval untuk Triad dan Akord 4 Nada (7ths)
+    chord_types = {
+        'maj': [0, 4, 7],               # Major
+        'min': [0, 3, 7],               # Minor
+        'dim': [0, 3, 6],               # Diminished
+        'aug': [0, 4, 8],               # Augmented
+        'maj7': [0, 4, 7, 11],          # Major 7th
+        'm7': [0, 3, 7, 10],            # Minor 7th
+        '7': [0, 4, 7, 10],             # Dominant 7th
+        'dim7': [0, 3, 6, 9],           # Diminished 7th
+        'm7b5': [0, 3, 6, 10]           # Half-diminished (Minor 7 flat 5)
+    }
+
+    for i, root in enumerate(pitch_classes):
+        for chord_name, intervals in chord_types.items():
+            template = np.zeros(12)
+            for interval in intervals:
+                template[(i + interval) % 12] = 1.0
+            
+            # Normalisasi template
+            template = template / np.linalg.norm(template)
+            
+            # Format nama akord
+            if chord_name == 'maj':
+                label = root
+            elif chord_name == 'min':
+                label = f"{root}m"
+            else:
+                label = f"{root}{chord_name}"
+                
+            templates.append(template)
+            labels.append(label)
+            
+    return np.array(templates).T, labels
+
+def detect_chords_librosa(y, sr):
+    # 1. Ekstrak Chroma menggunakan Constant-Q Transform (lebih akurat untuk musik)
+    # Gunakan harmonik untuk fokus pada nada (mengabaikan perkusi/noise)
+    y_harmonic, _ = librosa.effects.hpss(y)
+    chroma = librosa.feature.chroma_cqt(y=y_harmonic, sr=sr)
+    
+    # 2. Buat Template Akord
+    templates, labels = generate_chord_templates()
+    
+    # 3. Hitung Similaritas (Dot Product)
+    chroma_norm = librosa.util.normalize(chroma, norm=2, axis=0)
+    similarities = np.dot(templates.T, chroma_norm)
+    
+    # 4. Cari akord dengan kecocokan tertinggi tiap frame
+    best_matches = np.argmax(similarities, axis=0)
+    
+    # 5. Smoothing menggunakan filter median agar perubahan akord tidak terlalu bergetar/jitter
+    smoothed_matches = medfilt(best_matches, kernel_size=31).astype(int)
+    
+    # 6. Konversi ke array dictionary dengan timestamp
+    times = librosa.frames_to_time(np.arange(chroma.shape[1]), sr=sr)
+    chords = []
+    current_chord = None
+    
+    for time_val, match_idx in zip(times, smoothed_matches):
+        chord_label = labels[match_idx]
+        if chord_label != current_chord:
+            chords.append({"time": float(time_val), "label": chord_label})
+            current_chord = chord_label
+            
+    return chords
+# ----------------------------------------------------------------------
+
+# Callback untuk Reset Kecepatan Tempo ke 1.0x
+def reset_tempo():
+    st.session_state.speed_slider = 1.0
+
+uploaded_file = st.file_uploader("Unggah file audio (WAV / MP3)", type=["wav", "mp3"])
 
 if uploaded_file is not None:
-    temp_path = f"temp_{uploaded_file.name}"
-    with open(temp_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    
-    st.session_state.audio_path = temp_path
-    st.success("File audio berhasil di-upload!")
-
-# Tombol Proses Analisis
-if st.session_state.audio_path is not None:
-    if st.button("Mulai Analisis Audio"):
-        with st.spinner("Menganalisis akord & mendeteksi BPM tempo..."):
-            try:
-                # Load audio menggunakan librosa
-                data, rate = librosa.load(st.session_state.audio_path, sr=44100, mono=True)
-                
-                # 1. Deteksi BPM Tempo
-                tempo, _ = librosa.beat.beat_track(y=data, sr=rate)
-                if isinstance(tempo, np.ndarray):
-                    st.session_state.detected_bpm = int(round(float(tempo[0])))
-                else:
-                    st.session_state.detected_bpm = int(round(float(tempo)))
-
-                # 2. Deteksi Akord Lanjutan via Template Matching (+ Ekstensi 7th)
-                y_harmonic, _ = librosa.effects.hpss(data)
-                chroma = librosa.feature.chroma_cqt(y=y_harmonic, sr=rate)
-                
-                chroma_notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-                chord_templates = []
-                chord_labels = []
-                
-                for i in range(12):
-                    # 1. Major (Triad) [0, 4, 7]
-                    t_maj = np.zeros(12)
-                    t_maj[[i, (i+4)%12, (i+7)%12]] = 1
-                    chord_templates.append(t_maj)
-                    chord_labels.append(chroma_notes[i])
-                    
-                    # 2. Minor (Triad) [0, 3, 7]
-                    t_min = np.zeros(12)
-                    t_min[[i, (i+3)%12, (i+7)%12]] = 1
-                    chord_templates.append(t_min)
-                    chord_labels.append(f"{chroma_notes[i]}m")
-                    
-                    # 3. Dominant 7th [0, 4, 7, 10]
-                    t_dom7 = np.zeros(12)
-                    t_dom7[[i, (i+4)%12, (i+7)%12, (i+10)%12]] = 1
-                    chord_templates.append(t_dom7)
-                    chord_labels.append(f"{chroma_notes[i]}7")
-                    
-                    # 4. Major 7th [0, 4, 7, 11]
-                    t_maj7 = np.zeros(12)
-                    t_maj7[[i, (i+4)%12, (i+7)%12, (i+11)%12]] = 1
-                    chord_templates.append(t_maj7)
-                    chord_labels.append(f"{chroma_notes[i]}maj7")
-                    
-                    # 5. Minor 7th [0, 3, 7, 10]
-                    t_m7 = np.zeros(12)
-                    t_m7[[i, (i+3)%12, (i+7)%12, (i+10)%12]] = 1
-                    chord_templates.append(t_m7)
-                    chord_labels.append(f"{chroma_notes[i]}m7")
-
-                # Normalisasi matriks template & chroma (Cosine Similarity)
-                chord_templates = np.array(chord_templates)
-                norms = np.linalg.norm(chord_templates, axis=1, keepdims=True)
-                chord_templates_norm = chord_templates / norms
-                
-                chroma_norm = chroma / (np.linalg.norm(chroma, axis=0, keepdims=True) + 1e-6)
-                
-                # Hitung skoring kecocokan
-                chord_scores = np.dot(chord_templates_norm, chroma_norm)
-                times = librosa.times_like(chroma.shape[1], sr=rate)
-                
-                raw_chords = []
-                prev_chord = None
-                
-                for i, t in enumerate(times):
-                    best_chord_idx = np.argmax(chord_scores[:, i])
-                    label = chord_labels[best_chord_idx]
-                    
-                    if label != prev_chord:
-                        raw_chords.append({"time": float(t), "label": label})
-                        prev_chord = label
-                        
-                # Filter noise/transisi cepat (durasi minimal 0.6 detik)
-                filtered_chords = []
-                min_duration = 0.6 
-                for i in range(len(raw_chords)):
-                    current_time = raw_chords[i]['time']
-                    next_time = raw_chords[i+1]['time'] if i+1 < len(raw_chords) else times[-1]
-                    
-                    if (next_time - current_time) >= min_duration:
-                        filtered_chords.append(raw_chords[i])
-
-                st.session_state.raw_chords = filtered_chords
-                st.success("Analisis selesai!")
-            except Exception as e:
-                st.error(f"Terjadi kesalahan saat memproses audio: {e}")
-
-# Tampilkan Hasil Jika Sudah Dianalisis
-if st.session_state.detected_bpm > 0:
-    st.markdown("---")
-    st.subheader("📊 Hasil Analisis")
-    st.metric(label="Perkiraan Tempo (BPM)", value=st.session_state.detected_bpm)
-    
-    st.write("### Daftar Perubahan Akord:")
-    if st.session_state.raw_chords:
-        chord_display = []
-        for c in st.session_state.raw_chords[:150]:
-            m = int(c['time'] // 60)
-            s = int(c['time'] % 60)
-            chord_display.append({"Waktu": f"{m:02d}:{s:02d}", "Akord": c['label']})
+    # Reset state jika file baru diunggah
+    if "uploaded_name" not in st.session_state or st.session_state.uploaded_name != uploaded_file.name:
+        st.session_state.uploaded_name = uploaded_file.name
+        st.session_state.file_id = str(time.time()) # Unique ID per unggahan
+        st.session_state.speed_slider = 1.0 # Default speed
         
-        st.table(chord_display)
-    else:
-        st.info("Belum ada data akord yang terdeteksi.")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(uploaded_file.read())
+            st.session_state.audio_path = tmp.name
+
+        with st.spinner("Menganalisis akord (Support 4-Nada) & mendeteksi BPM tempo..."):
+            data, rate = librosa.load(st.session_state.audio_path, sr=44100, mono=True)
+            
+            # 1. Deteksi BPM
+            tempo, _ = librosa.beat.beat_track(y=data, sr=rate)
+            st.session_state.detected_bpm = int(round(float(tempo)))
+
+            # 2. Deteksi Akord via Librosa (Menggantikan Vamp/Chordino)
+            data_hp = apply_highpass_filter(data, rate, cutoff_freq=80)
+            
+            # Deteksi kustom dengan Librosa
+            raw_chords = detect_chords_librosa(data_hp, rate)
+            st.session_state.raw_chords = raw_chords
+
+            # Load Audio Stereo untuk Playback
+            y_full, sr_full = librosa.load(st.session_state.audio_path, sr=44100, mono=False)
+            st.session_state.y_full = y_full
+            st.session_state.sr_full = sr_full
+
+    # Tampilkan Info BPM
+    st.subheader("⚙️ Informasi Audio")
+    st.markdown(f"**Auto BPM Original:** `{st.session_state.detected_bpm} BPM`")
+
+    # Inisialisasi Key Slider di Session State jika Belum Ada
+    if "speed_slider" not in st.session_state:
+        st.session_state.speed_slider = 1.0
+
+    # Layout Control Bar Tempo (Slider di kiri, Tombol Reset persis di samping slider, Info Tempo Efektif di kanan)
+    col_speed, col_reset_btn, col_info = st.columns([1.8, 0.4, 1.8])
+    
+    with col_speed:
+        speed_factor = st.slider(
+            "⚡ Kecepatan Tempo", 
+            min_value=0.5, 
+            max_value=1.5, 
+            step=0.05,
+            key="speed_slider"
+        )
+        
+    with col_reset_btn:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        st.button("Reset", on_click=reset_tempo, help="Reset ke 1.0x", key="btn_reset_text")
+
+    current_bpm = int(round(st.session_state.detected_bpm * speed_factor))
+    with col_info:
+        st.markdown(f"<p style='margin-top: 32px;'><b>Tempo Efektif:</b> <code>{current_bpm} BPM</code> ({speed_factor:.2f}x)</p>", unsafe_allow_html=True)
+
+    # Buat file audio time-stretch dengan nama unik per file & per tempo
+    file_key = f"{st.session_state.file_id}_{speed_factor}"
+    processed_audio_path = os.path.join(tempfile.gettempdir(), f"stretched_{file_key}.wav")
+    
+    if not os.path.exists(processed_audio_path):
+        with st.spinner("Memproses audio & memuat Waveform..."):
+            y_audio = st.session_state.y_full
+            sr_audio = st.session_state.sr_full
+            
+            if y_audio.ndim == 2:
+                left = process_time_stretch(y_audio[0], sr_audio, speed_factor)
+                right = process_time_stretch(y_audio[1], sr_audio, speed_factor)
+                stretched_audio = np.vstack([left, right]).T
+            else:
+                stretched_audio = process_time_stretch(y_audio, sr_audio, speed_factor)
+                
+            sf.write(processed_audio_path, stretched_audio, sr_audio)
+
+    # Adjust Timestamp Akord
+    adjusted_chords = []
+    for c in st.session_state.raw_chords:
+        adjusted_chords.append({
+            "time": c["time"] / speed_factor,
+            "label": c["label"]
+        })
+
+    chords_json = json.dumps(adjusted_chords)
+
+    # Encode Audio Stretched ke Base64
+    with open(processed_audio_path, "rb") as f:
+        audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    # HTML + JS WaveSurfer Player dengan Fitur Looping Section
+    player_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <!-- Unique Render ID: {file_key} -->
+        <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/wavesurfer.min.js"></script>
+        <script src="https://unpkg.com/wavesurfer.js@6.6.4/dist/plugin/wavesurfer.regions.min.js"></script>
+        <style>
+            body {{
+                background-color: #0d1117;
+                color: white;
+                font-family: -apple-system, sans-serif;
+                margin: 0;
+                padding: 10px;
+            }}
+            .player-container {{
+                background: #161b22;
+                border: 1px solid #30363d;
+                border-radius: 12px;
+                padding: 15px;
+            }}
+            #waveform {{
+                width: 100%;
+                margin-bottom: 15px;
+                position: relative;
+            }}
+            .controls {{
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin-bottom: 15px;
+                flex-wrap: wrap;
+            }}
+            button {{
+                background-color: #238636;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: bold;
+                cursor: pointer;
+                transition: background-color 0.2s;
+            }}
+            button:hover {{
+                background-color: #2ea043;
+            }}
+            button.btn-loop-active {{
+                background-color: #d29922;
+            }}
+            button.btn-clear {{
+                background-color: #21262d;
+                border: 1px solid #30363d;
+            }}
+            button.btn-clear:hover {{
+                background-color: #30363d;
+            }}
+            .chord-box {{
+                background: #0d1117;
+                border: 1px solid #30363d;
+                border-radius: 8px;
+                padding: 15px;
+                text-align: center;
+            }}
+            .chord-title {{
+                color: #8b949e;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }}
+            .chord-val {{
+                font-size: 56px;
+                font-weight: bold;
+                color: #58a6ff;
+                margin-top: 5px;
+            }}
+            .wavesurfer-region {{
+                border-left: 1px solid rgba(88, 166, 255, 0.5) !important;
+                background-color: rgba(88, 166, 255, 0.05) !important;
+            }}
+            /* Highlighting khusus untuk area manual drag/loop */
+            .wavesurfer-region[data-region-highlight="true"] {{
+                background-color: rgba(210, 153, 34, 0.25) !important;
+                border: 1px solid #d29922 !important;
+            }}
+            .chord-label-tag {{
+                position: absolute;
+                top: 2px;
+                left: 3px;
+                background: rgba(31, 111, 235, 0.85);
+                color: #ffffff;
+                font-size: 10px;
+                font-weight: bold;
+                padding: 1px 4px;
+                border-radius: 3px;
+                pointer-events: none;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="player-container" id="player_{file_key}">
+            <div id="waveform"></div>
+            <div class="controls">
+                <button onclick="wavesurfer.playPause()">Play / Pause</button>
+                <button id="btnLoop" onclick="toggleLoopMode()">🔁 Loop Section: OFF</button>
+                <button class="btn-clear" onclick="clearCustomLoop()">❌ Hapus Seleksi Loop</button>
+            </div>
+            <div class="chord-box">
+                <div class="chord-title">Akord Aktif</div>
+                <div id="chordDisplay" class="chord-val">-</div>
+            </div>
+        </div>
+
+        <script>
+            const chordData = {chords_json};
+            const chordDisplay = document.getElementById('chordDisplay');
+            const btnLoop = document.getElementById('btnLoop');
+
+            let isLoopEnabled = false;
+            let activeLoopRegion = null;
+
+            const wavesurfer = WaveSurfer.create({{
+                container: '#waveform',
+                waveColor: '#30363d',
+                progressColor: '#58a6ff',
+                cursorColor: '#f0883e',
+                height: 90,
+                responsive: true,
+                plugins: [
+                    WaveSurfer.regions.create({{
+                        dragSelection: true // Mengizinkan pengguna memblok/drag area baru di waveform
+                    }})
+                ]
+            }});
+
+            wavesurfer.load('data:audio/wav;base64,{audio_b64}');
+
+            wavesurfer.on('ready', () => {{
+                const totalDuration = wavesurfer.getDuration();
+                chordData.forEach((item, index) => {{
+                    const nextTime = (index < chordData.length - 1) ? chordData[index + 1].time : totalDuration;
+                    
+                    const region = wavesurfer.addRegion({{
+                        start: item.time,
+                        end: nextTime,
+                        drag: false,
+                        resize: false
+                    }});
+
+                    if (region.element) {{
+                        const tag = document.createElement('span');
+                        tag.className = 'chord-label-tag';
+                        tag.innerText = item.label;
+                        region.element.appendChild(tag);
+                    }}
+                }});
+            }});
+
+            // Tangkap region yang dibuat secara manual lewat drag
+            wavesurfer.on('region-created', (region) => {{
+                if (region.drag || region.resize) {{
+                    if (activeLoopRegion && activeLoopRegion !== region && activeLoopRegion.drag) {{
+                        activeLoopRegion.remove();
+                    }}
+                    activeLoopRegion = region;
+                    region.element.setAttribute('data-region-highlight', 'true');
+                    
+                    if (!isLoopEnabled) {{
+                        toggleLoopMode();
+                    }}
+                }}
+            }});
+
+            // Eksekusi pengulangan (loop) ketika playback menyentuh batas akhir region
+            wavesurfer.on('region-out', (region) => {{
+                if (isLoopEnabled && activeLoopRegion && region === activeLoopRegion) {{
+                    wavesurfer.seekTo(activeLoopRegion.start / wavesurfer.getDuration());
+                    wavesurfer.play();
+                }}
+            }});
+
+            // Klik region akord standar untuk dijadikan target loop
+            wavesurfer.on('region-click', (region, e) => {{
+                e.stopPropagation();
+                if (!region.drag) {{
+                    if (activeLoopRegion && activeLoopRegion.drag) {{
+                        activeLoopRegion.remove();
+                    }}
+                    activeLoopRegion = region;
+                    if (!isLoopEnabled) {{
+                        toggleLoopMode();
+                    }}
+                    wavesurfer.seekTo(region.start / wavesurfer.getDuration());
+                    wavesurfer.play();
+                }}
+            }});
+
+            function toggleLoopMode() {{
+                isLoopEnabled = !isLoopEnabled;
+                if (isLoopEnabled) {{
+                    btnLoop.innerText = "🔁 Loop Section: ON";
+                    btnLoop.classList.add('btn-loop-active');
+                }} else {{
+                    btnLoop.innerText = "🔁 Loop Section: OFF";
+                    btnLoop.classList.remove('btn-loop-active');
+                }}
+            }}
+
+            function clearCustomLoop() {{
+                if (activeLoopRegion && activeLoopRegion.drag) {{
+                    activeLoopRegion.remove();
+                }}
+                activeLoopRegion = null;
+                if (isLoopEnabled) {{
+                    toggleLoopMode();
+                }}
+            }}
+
+            wavesurfer.on('audioprocess', () => {{
+                const currentTime = wavesurfer.getCurrentTime();
+                let activeChord = "-";
+
+                for (let i = 0; i < chordData.length; i++) {{
+                    if (currentTime >= chordData[i].time) {{
+                        if (i === chordData.length - 1 || currentTime < chordData[i+1].time) {{
+                            activeChord = chordData[i].label;
+                            break;
+                        }}
+                    }}
+                }}
+                chordDisplay.innerText = activeChord;
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    
+    components.html(player_html, height=280)
