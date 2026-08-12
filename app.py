@@ -1,6 +1,6 @@
 # Berikut adalah script Streamlit yang telah diperbarui dengan **menghapus seluruh fitur *time-stretching*** (pengubahan kecepatan tempo), sehingga pemrosesan audio menjadi jauh lebih cepat dan ringan:
 
-```python
+python
 import streamlit as st
 import streamlit.components.v1 as components
 import librosa
