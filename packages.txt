@@ -1,0 +1,4 @@
+build-essential
+libsndfile1
+vamp-plugin-sdk
+libvamp-hostsdk3
