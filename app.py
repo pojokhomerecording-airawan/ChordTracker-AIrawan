@@ -17,7 +17,7 @@ def apply_highpass_filter(data, rate, cutoff_freq=80):
     return data
 
 # Judul Aplikasi
-st.title("🎸 ChordTracker & Audio Analyzer")
+st.title("🎸 ChordTracker by AIrawan")
 st.write("Aplikasi deteksi akord, tempo BPM, dan pemutar audio.")
 
 # Inisialisasi session state jika belum ada
@@ -53,9 +53,12 @@ if st.session_state.audio_path is not None:
                 # Load audio menggunakan librosa
                 data, rate = librosa.load(st.session_state.audio_path, sr=44100, mono=True)
                 
-                # 1. Deteksi BPM Tempo
+                # 1. Deteksi BPM Tempo (Diperbarui dengan mengambil indeks [0] untuk mencegah error array)
                 tempo, _ = librosa.beat.beat_track(y=data, sr=rate)
-                st.session_state.detected_bpm = int(round(float(tempo)))
+                if isinstance(tempo, np.ndarray):
+                    st.session_state.detected_bpm = int(round(float(tempo[0])))
+                else:
+                    st.session_state.detected_bpm = int(round(float(tempo)))
 
                 # 2. Deteksi Akord via Chroma Librosa (Cloud-Friendly & Stabil)
                 data_hp = apply_highpass_filter(data, rate, cutoff_freq=80)
